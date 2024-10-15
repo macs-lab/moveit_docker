@@ -1,0 +1,42 @@
+controller_names:
+  - scaled_joint_trajectory_controller
+  - joint_trajectory_controller
+  - forward_position_controller
+
+
+scaled_joint_trajectory_controller:
+  action_ns: follow_joint_trajectory
+  type: FollowJointTrajectory
+  default: false
+  joints:
+    - shoulder_pan_joint
+    - shoulder_lift_joint
+    - elbow_joint
+    - wrist_1_joint
+    - wrist_2_joint
+    - wrist_3_joint
+
+
+joint_trajectory_controller:
+  action_ns: follow_joint_trajectory
+  type: FollowJointTrajectory
+  default: false
+  joints:
+    - shoulder_pan_joint
+    - shoulder_lift_joint
+    - elbow_joint
+    - wrist_1_joint
+    - wrist_2_joint
+    - wrist_3_joint
+
+forward_position_controller:
+  action_ns: follow_joint_trajectory #joint_group_position_controller https://docs.ros.org/en/noetic/api/control_msgs/html/action/FollowJointTrajectory.html
+  type: FollowJointTrajectory #position_controllers/JointGroupPositionController
+  default: true
+  joints:
+    - shoulder_pan_joint
+    - shoulder_lift_joint
+    - elbow_joint
+    - wrist_1_joint
+    - wrist_2_joint
+    - wrist_3_joint

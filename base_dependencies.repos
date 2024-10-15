@@ -1,0 +1,7 @@
+repositories:
+    # Inspection Interfaces
+    InspectionInterfaces:
+        type: git
+        url: https://github.com/macs-lab/InspectionInterfaces.git
+        version: fde1d5f
+        

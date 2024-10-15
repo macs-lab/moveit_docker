@@ -1,0 +1,86 @@
+version: "3"
+services:
+  base:
+    image: moveit:base
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        ROS_DISTRO: humble
+      target: base
+      # Inside docker file, FROM xxx AS base
+    # Interactive shell
+    stdin_open: true
+    tty: true
+    # Networking and IPC for ROS 2. To prevent creating a new IP address for each container
+    network_mode: host
+    ipc: host
+    pid: host
+    # Needed to access devices and display graphical applications
+    privileged: true
+    volumes:
+      # Allows graphical programs in the container.
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ${XAUTHORITY:-$HOME/.Xauthority}:/root/.Xauthority
+      # Allow access to host devices
+      - /dev:/dev
+    device_cgroup_rules:
+      - 'c *:* rmw'
+    environment:
+      - ROS_DOMAIN_ID
+      # - ROBOT_IP=192.168.1.102
+
+  overlay:
+    extends: base
+    image: moveit:overlay
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: overlay
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /tmp/.docker.xauth:/tmp/.docker.xauth:rw
+
+  devel:
+    extends: base
+    image: moveit:devel
+    command: /bin/bash
+    # This just launches shell. could put ros2 run ... in command instead. Need to figure out how to run multiple commands
+    # Maybe could instead run a launch file to run all these files? Look into it
+    # Could create multiple containers for each command as a solution
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: devel
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /tmp/.docker.xauth:/tmp/.docker.xauth:rw
+      - ./inspection_robot_service:/overlay_ws/src/inspection_robot_service
+      - ${XAUTHORITY:-$HOME/.Xauthority}:/root/.Xauthority
+      - /dev:/dev
+      - ./data:/data # Add this line to mount the data directory
+  
+  ur_control:
+    extends: overlay
+    environment:
+    # can change extends to overlay once we're done developing
+    # no need image? purpose of this container just to run a command
+    command: ros2 launch inspection_robot_service ur_control.launch.py ur_type:=ur5e robot_ip:=${ROBOT_IP:-192.168.1.102} launch_rviz:=false initial_joint_controller:=joint_trajectory_controller
+
+  ur_moveit:
+    extends: overlay
+    command: ros2 launch inspection_robot_service ur_moveit.launch.py ur_type:=ur5e launch_rviz:=true
+  
+  hello_moveit:
+    extends: devel
+    command: ros2 launch inspection_robot_service hello_moveit_ur_launch.py
+
+  manual_move:
+    extends: devel
+    command: ros2 run inspection_robot_service focus_manual_move.py
