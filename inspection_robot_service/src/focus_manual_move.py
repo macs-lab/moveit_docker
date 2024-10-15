@@ -114,7 +114,7 @@ class PoseStampedCreator(Node):
 
     # Move to the pose we received
     def on_timer(self):
-        print(self.state)
+        # print(self.state)
             
         if self.state == FEEDBACK:
             self.simple_feedback()
@@ -142,7 +142,6 @@ class PoseStampedCreator(Node):
             time.sleep(2) # Wait for the robot to move to the start pose. Necessary, otherwise sometimes the robot doesn't move to the start pose
             print('enter fb')
             self.state = FEEDBACK
-            print('counter =', self.counter)
             
             while self.counter < 5:
                 if self.state == IDLE:
@@ -233,9 +232,9 @@ class PoseStampedCreator(Node):
         self.twist_publisher.publish(msg)
 
     def new_focus_value_callback(self, msg):
-        # print(msg)
         self.new_time = msg.header.stamp
         self.new_curr_focus_value = msg.data
+        self.raw_focus_value = msg.raw_data
 
         try:
             try:
@@ -257,7 +256,7 @@ class PoseStampedCreator(Node):
             timestamp = self.new_time.sec + self.new_time.nanosec / 1e9
 
             # Save the current focus value and its associated pose
-            self.focus_pose_dict[self.new_curr_focus_value] = {'pose': pose_world, 'timestamp': timestamp, 'metric': msg.metric}
+            self.focus_pose_dict[self.new_curr_focus_value] = {'raw_data': self.raw_focus_value, 'pose': pose_world, 'timestamp': timestamp, 'metric': msg.metric}
 
         except TransformException as ex:
             self.get_logger().info(
@@ -294,11 +293,6 @@ class PoseStampedCreator(Node):
                 self.curr_max_fv = max_focus_value
                 self.max_focus_pose = self.focus_pose_dict[self.curr_max_fv]['pose'].pose
 
-        # if self.focus_pose_dict:
-        #     print('max ',self.curr_max_fv, self.max_focus_pose)
-        #     self.curr_max_fv = max(self.focus_pose_dict.keys()) if max(self.focus_pose_dict.keys()) > self.curr_max_fv else self.curr_max_fv
-        #     self.max_focus_pose = self.focus_pose_dict[self.curr_max_fv]['pose'].pose if max(self.focus_pose_dict.keys()) > self.curr_max_fv else self.max_focus_pose
-
             # Keep moving at the specified speed until current x-position reaches offset x-position
             if current_pose.pose.position.x >= self.offset_pose.pose.position.x:
                 self.set_parameters([rclpy.parameter.Parameter('twist_started', rclpy.parameter.Parameter.Type.BOOL, False)])
@@ -332,7 +326,7 @@ class PoseStampedCreator(Node):
         
         with open(file_path, 'a', newline='') as csvfile:
             # Extract the keys for the header
-            fieldnames = ['focus_value','x','y','z','quaternion','timestamp', 'metric']
+            fieldnames = ['focus_value','raw_focus_value','x','y','z','quaternion','timestamp', 'metric']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
             # Write the header only if the file is empty or doesn't exist
@@ -341,6 +335,7 @@ class PoseStampedCreator(Node):
 
             t0 = self.focus_pose_dict[list(self.focus_pose_dict.keys())[0]]['timestamp']
             for focus_value, data in self.focus_pose_dict.items():
+                raw_focus_value = data['raw_data']
                 pose = data['pose'].pose
                 positionx = pose.position.x
                 positiony = pose.position.y
@@ -350,6 +345,7 @@ class PoseStampedCreator(Node):
                 metric = data['metric']
                 row = {
                     'focus_value': focus_value,
+                    'raw_focus_value': raw_focus_value,
                     'x': positionx,
                     'y': positiony,
                     'z': positionz,
