@@ -3,7 +3,7 @@
 import rclpy
 from rclpy.node import Node
 import time
-from geometry_msgs.msg import PoseStamped,Pose,TransformStamped, TwistStamped
+from geometry_msgs.msg import PoseStamped,Pose,TransformStamped, TwistStamped, Quaternion
 import geometry_msgs.msg
 import tf2_ros
 from tf2_ros.buffer import Buffer
@@ -22,9 +22,14 @@ import sys
 import rosbag2_py
 
 import numpy as np
-from std_msgs.msg import Float64
+from std_msgs.msg import Float64, Header
 from inspection_msgs.msg import FocusValue
 import math
+import csv
+import os
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+from datetime import datetime
 
 IDLE = 0
 POSES_AVAILABLE = 1
@@ -98,8 +103,14 @@ class PoseStampedCreator(Node):
         self.previous_ema = 0
         ###########################
 
+        self.timer_callback_group = ReentrantCallbackGroup()
         self.tf_wt = TransformStamped()
-        self.tf_timer = self.create_timer(0.1, self.on_timer)    
+        self.tf_timer = self.create_timer(0.1, self.on_timer, callback_group=self.timer_callback_group)    
+
+        # Create client to run multiple times
+        self.start_callback_group = ReentrantCallbackGroup()
+        self.start_service = self.create_service(Trigger, '/inspection/count_callback', self.start_callback, callback_group=self.start_callback_group)
+        self.get_logger().info('Start gathering data.')   
 
     def pose_callback(self, msg):
         self.i+=1
@@ -124,6 +135,32 @@ class PoseStampedCreator(Node):
             self.simple_feedback()
             self.get_logger().info('Feedback running')
     
+    def start_callback(self, request, response):
+        self.counter = 0
+        self.curr_max_fv = 0
+        self.focus_pose_dict = {}
+        if self.state == IDLE:
+            self.initial_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            
+            print('entering idle')
+            self.send_request_world(self.start_pose.pose)
+            print('sent request')
+            time.sleep(2) # Wait for the robot to move to the start pose. Necessary, otherwise sometimes the robot doesn't move to the start pose
+            print('enter fb')
+            self.state = FEEDBACK
+            
+            while self.counter < 5:
+                if self.state == IDLE:
+                    self.send_request_world(self.start_pose.pose)
+                    time.sleep(2)  # Wait for the robot to move to the start pose
+                    self.state = FEEDBACK
+                time.sleep(1)
+            
+            self.send_request_world(self.max_focus_pose)
+            time.sleep(2) # Wait for the robot to move to the max focus pose. Necessary, otherwise sometimes the robot doesn't move to the max focus pose
+            self.get_logger().info(f'MAX FOCUS VALUE: {self.curr_max_fv}')
+            return response
+        
     # Move to specified pose but overshoot 5 cm backwards
     def process_pose(self):
         self.state = MOVING
@@ -301,7 +338,7 @@ class PoseStampedCreator(Node):
             if (self.previous_ema - self.ema_focus_value) > 2:
                 self.set_parameters([rclpy.parameter.Parameter('twist_started', rclpy.parameter.Parameter.Type.BOOL, False)])
                 self.twist_started = self.get_parameter('twist_started').value
-
+                self.save_focus_pose_dict_to_csv()
                 self.send_request_world(max_focus_pose)
                 time.sleep(0.5) # Wait for the robot to move to the max focus pose. Necessary, otherwise sometimes the robot doesn't move to the max focus pose
                 # State change to IDLE placed in send_request_world, otherwise sometimes the robot doesn't move to the max focus pose
@@ -310,15 +347,66 @@ class PoseStampedCreator(Node):
         print(self.curr_focus_value, self.curr_max_fv, self.ema_focus_value, self.previous_ema)
         self.previous_ema = self.ema_focus_value
         return
+    
+    def save_focus_pose_dict_to_csv(self):
+        # Define the directory and file name
+        directory = '/data/'
+        # Generate the initial timestamp if it doesn't exist
+        
+        # Define the file name with the initial timestamp
+        file_name = f'focus_pose_dict_{self.initial_timestamp}.csv'
+        file_path = os.path.join(directory, file_name)
+    
+        
+        # Ensure the directory exists
+        os.makedirs(directory, exist_ok=True)
+
+        # Check if the file exists and is not empty
+        file_exists = os.path.isfile(file_path)
+        
+        with open(file_path, 'a', newline='') as csvfile:
+            # Extract the keys for the header
+            fieldnames = ['focus_value','raw_focus_value','x','y','z','quaternion','timestamp', 'metric']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+            # Write the header only if the file is empty or doesn't exist
+            if not file_exists or os.stat(file_path).st_size == 0:
+                writer.writeheader()
+
+            t0 = self.focus_pose_dict[list(self.focus_pose_dict.keys())[0]]['timestamp']
+            for focus_value, data in self.focus_pose_dict.items():
+                raw_focus_value = data['raw_data']
+                pose = data['pose'].pose
+                positionx = pose.position.x
+                positiony = pose.position.y
+                positionz = pose.position.z
+                quaternion = f"{pose.orientation.x},{pose.orientation.y},{pose.orientation.z},{pose.orientation.w}"
+                timestamp = data['timestamp']
+                metric = data['metric']
+                row = {
+                    'focus_value': focus_value,
+                    'raw_focus_value': raw_focus_value,
+                    'x': positionx,
+                    'y': positiony,
+                    'z': positionz,
+                    'quaternion': quaternion,
+                    'timestamp' : timestamp - t0,
+                    'metric': metric
+                }
+                writer.writerow(row)
 
 def main(args=None):
     rclpy.init(args=args)
     pose_stamped_client = PoseStampedCreator()
+    executor = MultiThreadedExecutor()
+    executor.add_node(pose_stamped_client)
     try:
-        rclpy.spin(pose_stamped_client)
+        # rclpy.spin(pose_stamped_client)
+        executor.spin()
     except KeyboardInterrupt:
-        pass
-    rclpy.shutdown()
+        # pass
+        pose_stamped_client.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

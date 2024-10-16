@@ -31,7 +31,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from datetime import datetime
 
-MOVING_DISTANCE = 0.02
+MOVING_DISTANCE = 0.04
 SPEED = 0.25 # pos is forward. 0.2 and under is too slow, circular motion on robot is visible
 
 IDLE = 0
@@ -96,8 +96,7 @@ class PoseStampedCreator(Node):
         self.focus_pose_dict = {}
         self.new_focus_value_sub = self.create_subscription(FocusValue, '/image_raw/compressed/focus_value', self.new_focus_value_callback, 10)
         self.new_focus_value_sub # prevent unused variable warning
-        # self.curr_focus_value = 0
-        self.curr_max_fv = 0 #None
+        self.curr_max_fv = 0
         self.max_focus_pose = None
         ###########################
 
@@ -135,7 +134,12 @@ class PoseStampedCreator(Node):
 
     
     def start_callback(self, request, response):
+        self.counter = 0
+        self.curr_max_fv = 0
+        self.focus_pose_dict = {}
         if self.state == IDLE:
+            self.initial_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            
             print('entering idle')
             self.send_request_world(self.start_pose.pose)
             print('sent request')
@@ -235,6 +239,7 @@ class PoseStampedCreator(Node):
         self.new_time = msg.header.stamp
         self.new_curr_focus_value = msg.data
         self.raw_focus_value = msg.raw_data
+        self.metric = msg.metric
 
         try:
             try:
@@ -256,7 +261,7 @@ class PoseStampedCreator(Node):
             timestamp = self.new_time.sec + self.new_time.nanosec / 1e9
 
             # Save the current focus value and its associated pose
-            self.focus_pose_dict[self.new_curr_focus_value] = {'raw_data': self.raw_focus_value, 'pose': pose_world, 'timestamp': timestamp, 'metric': msg.metric}
+            self.focus_pose_dict[self.new_curr_focus_value] = {'raw_data': self.raw_focus_value, 'pose': pose_world, 'timestamp': timestamp, 'metric': self.metric}
 
         except TransformException as ex:
             self.get_logger().info(
@@ -311,8 +316,7 @@ class PoseStampedCreator(Node):
         # Define the directory and file name
         directory = '/data/'
         # Generate the initial timestamp if it doesn't exist
-        if self.initial_timestamp is None:
-            self.initial_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
         # Define the file name with the initial timestamp
         file_name = f'focus_pose_dict_{self.initial_timestamp}.csv'
         file_path = os.path.join(directory, file_name)
