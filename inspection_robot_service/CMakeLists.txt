@@ -47,14 +47,10 @@ ament_python_install_package(${PROJECT_NAME})
 install(PROGRAMS
   src/python_pose_client.py
   src/send_pose.py
-  src/time_sync.py
-  src/time_sync_python_pose_client.py
   src/focus_manual_move.py
   src/PID_python_pose_client.py
   src/inverse_python_pose_client.py
-  src/no_autofocus.py
-  src/test_moveitpy.py
-  src/moveit_py.py
+  src/single_speed_autofocus.py
 
   DESTINATION lib/${PROJECT_NAME})
   

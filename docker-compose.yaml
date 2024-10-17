@@ -84,3 +84,7 @@ services:
   manual_move:
     extends: devel
     command: ros2 run inspection_robot_service focus_manual_move.py
+  
+  autofocus:
+    extends: devel
+    command: ros2 run inspection_robot_service single_speed_autofocus.py

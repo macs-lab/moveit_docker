@@ -98,6 +98,10 @@ class PoseStampedCreator(Node):
         self.new_focus_value_sub # prevent unused variable warning
         self.curr_max_fv = 0
         self.max_focus_pose = None
+        
+        self.ema_focus_value = 0
+        self.curr_focus_value = 0
+        self.previous_ema = 0
         ###########################
 
         self.timer_callback_group = ReentrantCallbackGroup()
@@ -112,7 +116,7 @@ class PoseStampedCreator(Node):
 
 
     # Move to the pose we received
-    def on_timer(self):            
+    def on_timer(self):
         if self.state == FEEDBACK:
             self.simple_feedback()
             
@@ -128,6 +132,14 @@ class PoseStampedCreator(Node):
             self.start_pose.pose.position.y =  self.tf_wt_start.transform.translation.y
             self.start_pose.pose.position.z =  self.tf_wt_start.transform.translation.z
             self.start_pose.pose.orientation =  self.tf_wt_start.transform.rotation
+
+            # Create start_offset_pose which is 2 cm behind start_pose on the x-axis
+            self.start_offset_pose = PoseStamped()
+            self.start_offset_pose.header.frame_id = 'world'
+            self.start_offset_pose.pose.position.x = self.start_pose.pose.position.x - 0.02
+            self.start_offset_pose.pose.position.y = self.start_pose.pose.position.y
+            self.start_offset_pose.pose.position.z = self.start_pose.pose.position.z
+            self.start_offset_pose.pose.orientation = self.start_pose.pose.orientation
             self.state = IDLE
 
     
@@ -135,13 +147,18 @@ class PoseStampedCreator(Node):
         self.counter = 0
         self.curr_max_fv = 0
         self.focus_pose_dict = {}
+        self.ema_focus_value = 0
+        self.curr_focus_value = 0
+        self.previous_ema = 0
+
         if self.state == IDLE:
             self.initial_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            self.send_request_world(self.start_pose.pose)
+            
+            print('entering idle')
+            self.send_request_world(self.start_offset_pose.pose)
             time.sleep(2) # Wait for the robot to move to the start pose. Necessary, otherwise sometimes the robot doesn't move to the start pose
             self.state = FEEDBACK
-            
-            while self.counter < 5:
+            while self.counter < 1:
                 if self.state == IDLE:
                     self.send_request_world(self.start_pose.pose)
                     time.sleep(2)  # Wait for the robot to move to the start pose
@@ -261,39 +278,19 @@ class PoseStampedCreator(Node):
             self.get_logger().info(
                 f'Could not fine tune. Still works fine') # {ex}')
             return
-
+    
     def simple_feedback(self):
         self.set_parameters([rclpy.parameter.Parameter('twist_started', rclpy.parameter.Parameter.Type.BOOL, True)])
         self.twist_started = self.get_parameter('twist_started').value
-
-        # Current and Offset pose to move forward
-        curr_time_fb = rclpy.time.Time()
-        tf_wt_fb = self.tf_buffer.lookup_transform('world', 'tool0', curr_time_fb)
-
-        current_pose = PoseStamped()
-        current_pose.header.frame_id = 'world'
-        current_pose.pose.position.x = tf_wt_fb.transform.translation.x
-        current_pose.pose.position.y = tf_wt_fb.transform.translation.y
-        current_pose.pose.position.z = tf_wt_fb.transform.translation.z
-        current_pose.pose.orientation = tf_wt_fb.transform.rotation
-        
-        if not hasattr(self, 'offset_pose'):
-            self.offset_pose = PoseStamped()
-            self.offset_pose.header.frame_id = current_pose.header.frame_id
-            self.offset_pose.pose.position.x = current_pose.pose.position.x + MOVING_DISTANCE # not sure why it's x, but tested and this is what worked
-            self.offset_pose.pose.position.y = current_pose.pose.position.y 
-            self.offset_pose.pose.position.z = current_pose.pose.position.z
-            self.offset_pose.pose.orientation = current_pose.pose.orientation
-            print(self.offset_pose.pose.position.x, current_pose.pose.position.x)
         
         if self.focus_pose_dict:
-            max_focus_value = max(self.focus_pose_dict.keys())
-            if max_focus_value > self.curr_max_fv:
-                self.curr_max_fv = max_focus_value
-                self.max_focus_pose = self.focus_pose_dict[self.curr_max_fv]['pose'].pose
+            self.curr_max_fv = max(self.focus_pose_dict.keys())
+            self.max_focus_pose = self.focus_pose_dict[self.curr_max_fv]['pose'].pose
+            
+            K = 2 / (5 + 1)  # Number of data points to average over. Values before last 5 are still considered, just to a lesser degree
+            self.ema_focus_value = (K * (self.new_curr_focus_value - self.ema_focus_value)) + self.ema_focus_value
 
-            # Keep moving at the specified speed until current x-position reaches offset x-position
-            if current_pose.pose.position.x >= self.offset_pose.pose.position.x:
+            if (self.previous_ema - self.ema_focus_value) > 2:
                 self.set_parameters([rclpy.parameter.Parameter('twist_started', rclpy.parameter.Parameter.Type.BOOL, False)])
                 self.twist_started = self.get_parameter('twist_started').value
                 print('reached offset')
@@ -303,6 +300,9 @@ class PoseStampedCreator(Node):
                 self.counter += 1
                 print('counter =', self.counter)
                 self.state = IDLE
+            
+            print(self.new_curr_focus_value, self.curr_max_fv, self.ema_focus_value, self.previous_ema)
+            self.previous_ema = self.ema_focus_value
 
         return
     
