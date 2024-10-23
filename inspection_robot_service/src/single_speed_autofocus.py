@@ -136,7 +136,7 @@ class PoseStampedCreator(Node):
             # Create start_offset_pose which is 2 cm behind start_pose on the x-axis
             self.start_offset_pose = PoseStamped()
             self.start_offset_pose.header.frame_id = 'world'
-            self.start_offset_pose.pose.position.x = self.start_pose.pose.position.x - 0.02
+            self.start_offset_pose.pose.position.x = self.start_pose.pose.position.x - 0.03
             self.start_offset_pose.pose.position.y = self.start_pose.pose.position.y
             self.start_offset_pose.pose.position.z = self.start_pose.pose.position.z
             self.start_offset_pose.pose.orientation = self.start_pose.pose.orientation
@@ -145,23 +145,20 @@ class PoseStampedCreator(Node):
     
     def start_callback(self, request, response):
         self.counter = 0
-        self.curr_max_fv = 0
-        self.focus_pose_dict = {}
-        self.ema_focus_value = 0
-        self.curr_focus_value = 0
-        self.previous_ema = 0
-
         if self.state == IDLE:
             self.initial_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             
             print('entering idle')
-            self.send_request_world(self.start_offset_pose.pose)
-            time.sleep(2) # Wait for the robot to move to the start pose. Necessary, otherwise sometimes the robot doesn't move to the start pose
-            self.state = FEEDBACK
             while self.counter < 1:
                 if self.state == IDLE:
-                    self.send_request_world(self.start_pose.pose)
+                    self.send_request_world(self.start_offset_pose.pose)
                     time.sleep(2)  # Wait for the robot to move to the start pose
+                    # Decided to move resets here because I want stuff in the csv starting after the robot moves to start_offset
+                    self.curr_max_fv = 0
+                    self.focus_pose_dict = {}
+                    self.ema_focus_value = 0
+                    self.curr_focus_value = 0
+                    self.previous_ema = 0
                     self.state = FEEDBACK
                 time.sleep(1)
             
@@ -200,6 +197,7 @@ class PoseStampedCreator(Node):
         future = self.pose_client.call_async(req)
         future.add_done_callback(self.response_callback_world)
         self.state = IDLE # State change needs to occur after moving to pose with max focus
+        print('moved')
         return
     def response_callback_world(self, future):
         try:

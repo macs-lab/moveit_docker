@@ -133,12 +133,12 @@ class PoseStampedCreator(Node):
     
     def start_callback(self, request, response):
         self.counter = 0
-        self.curr_max_fv = 0
-        self.focus_pose_dict = {}
         if self.state == IDLE:
             self.initial_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             self.send_request_world(self.start_pose.pose)
             time.sleep(2) # Wait for the robot to move to the start pose. Necessary, otherwise sometimes the robot doesn't move to the start pose
+            self.curr_max_fv = 0
+            self.focus_pose_dict = {}
             self.state = FEEDBACK
             
             while self.counter < 5:
