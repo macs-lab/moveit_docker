@@ -141,7 +141,7 @@ class PoseStampedCreator(Node):
             self.focus_pose_dict = {}
             self.state = FEEDBACK
             
-            while self.counter < 5:
+            while self.counter < 1:
                 if self.state == IDLE:
                     self.send_request_world(self.start_pose.pose)
                     time.sleep(2)  # Wait for the robot to move to the start pose

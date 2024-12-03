@@ -74,7 +74,7 @@ services:
     command: ros2 launch inspection_robot_service ur_control.launch.py ur_type:=ur5e robot_ip:=${ROBOT_IP:-192.168.1.102} launch_rviz:=false initial_joint_controller:=joint_trajectory_controller
 
   ur_moveit:
-    extends: overlay
+    extends: devel
     command: ros2 launch inspection_robot_service ur_moveit.launch.py ur_type:=ur5e launch_rviz:=true
   
   hello_moveit:

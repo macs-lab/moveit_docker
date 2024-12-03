@@ -80,7 +80,7 @@ void move_to_pose(const std::shared_ptr<inspection_srvs::srv::MoveToPose::Reques
 { 
     RCLCPP_INFO(rclcpp::get_logger("rclcpp"), "Hello pose!");
 
-    move_group_interface->setMaxVelocityScalingFactor(0.01); // Scale velocity to 10% of the maximum
+    move_group_interface->setMaxVelocityScalingFactor(0.005); // Scale velocity to 10% of the maximum
 
     // Get the current pose
     // geometry_msgs::msg::Pose start_pose = request->start_pose.pose;
