@@ -66,6 +66,7 @@ COPY inspection_robot_service .
 
 WORKDIR /overlay_ws
 RUN source /base_ws/install/setup.bash \
+    && apt-get update -y \
     && rosdep install --from-paths src --ignore-src --rosdistro ${ROS_DISTRO} -y \
     && colcon build --symlink-install
 

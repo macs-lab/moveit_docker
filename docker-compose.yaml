@@ -88,3 +88,7 @@ services:
   autofocus:
     extends: devel
     command: ros2 run inspection_robot_service single_speed_autofocus.py
+
+  multi_speed_autofocus:
+    extends: devel
+    command: ros2 run inspection_robot_service multi_speed_autofocus.py

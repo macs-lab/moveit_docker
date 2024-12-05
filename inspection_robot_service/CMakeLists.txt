@@ -48,9 +48,9 @@ install(PROGRAMS
   src/python_pose_client.py
   src/send_pose.py
   src/focus_manual_move.py
-  src/PID_python_pose_client.py
   src/inverse_python_pose_client.py
   src/single_speed_autofocus.py
+  src/multi_speed_autofocus.py
 
   DESTINATION lib/${PROJECT_NAME})
   
