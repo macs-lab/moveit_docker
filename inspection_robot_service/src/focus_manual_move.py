@@ -31,7 +31,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from datetime import datetime
 
-MOVING_DISTANCE = 0.1
+MOVING_DISTANCE = 0.15
 SPEED = 0.25 # pos is forward. 0.2 and under is too slow, circular motion on robot is visible
 
 IDLE = 0
@@ -96,10 +96,12 @@ class PoseStampedCreator(Node):
         # Sobel initialize
         self.focus_pose_dict = {}
         self.new_focus_value_sub = self.create_subscription(FocusValue, '/image_raw/compressed/focus_value', self.new_focus_value_callback, 10)
-        # self.new_focus_value_sub # Keep this commented out, it calls the subscription twice and causes repeat data
         self.curr_max_fv = 0
         self.max_focus_pose = None
         self.ema_focus_value = 0
+        self.dema_focus_value = 0
+        self.previous_dema_focus_value = 0
+        self.ratio = 0
         ###########################
 
         self.timer_callback_group = ReentrantCallbackGroup()
@@ -141,6 +143,10 @@ class PoseStampedCreator(Node):
             time.sleep(2) # Wait for the robot to move to the start pose. Necessary, otherwise sometimes the robot doesn't move to the start pose
             self.curr_max_fv = 0
             self.focus_pose_dict = {}
+            self.ema_focus_value = 0
+            self.dema_focus_value = 0
+            self.previous_dema_focus_value = 0
+            self.ratio = 0
             self.state = FEEDBACK
             
             while self.counter < 1:
@@ -233,8 +239,7 @@ class PoseStampedCreator(Node):
 
     def new_focus_value_callback(self, msg):
         self.new_time = msg.header.stamp
-        self.new_curr_focus_value = msg.data
-        self.raw_focus_value = msg.raw_data
+        self.curr_focus_value = msg.data # Raw data. Filtering would now be using EMA
         self.metric = msg.metric
 
         try:
@@ -256,20 +261,30 @@ class PoseStampedCreator(Node):
         self.timestamp = self.new_time.sec + self.new_time.nanosec / 1e9
 
         # Ensure unique timestamp by adding a small increment if a duplicate is detected
-        while self.timestamp in self.focus_pose_dict:
-            self.timestamp += 0.01
-            print('time shift')
+        # while self.timestamp in self.focus_pose_dict:
+        #     self.timestamp += 0.01
+        #     print('time shift')
         
         # Calculate the EMA
-        K = 2 / (5 + 1)  # Number of data points to average over. Values before last 5 are still considered, just to a lesser degree
-        self.ema_focus_value = (K * (self.new_curr_focus_value - self.ema_focus_value)) + self.ema_focus_value
+        if self.ema_focus_value == 0:
+            self.ema_focus_value = self.curr_focus_value
+            self.dema_focus_value = self.curr_focus_value
+        K = 2 / (15 + 1)  # Number of data points to average over. Values before last 15 are still considered, just to a lesser degree
+        K_dema = 2 / (5+1)
+
+        self.previous_dema_focus_value = self.dema_focus_value
+        self.ema_focus_value = (K * (self.curr_focus_value - self.ema_focus_value)) + self.ema_focus_value
+        self.dema_focus_value = (K_dema * (self.ema_focus_value - self.dema_focus_value)) + self.dema_focus_value
+
+        if self.previous_dema_focus_value != 0:
+            self.ratio = self.dema_focus_value / self.previous_dema_focus_value
 
         # Save the current focus value and its associated pose
-        # self.focus_pose_dict[self.new_curr_focus_value] = {'raw_data': self.raw_focus_value, 'pose': pose_world, 'timestamp': timestamp, 'metric': self.metric}
         self.focus_pose_dict[self.timestamp] = {
-            'focus_value': self.new_curr_focus_value,
-            'raw_data': self.raw_focus_value,
+            'focus_value': self.curr_focus_value,
             'ema': self.ema_focus_value,
+            'dema': self.dema_focus_value,
+            'ratio': self.ratio,
             'pose': pose_world,
             'metric': self.metric}
 
@@ -303,12 +318,10 @@ class PoseStampedCreator(Node):
             print(self.offset_pose.pose.position.x, current_pose.pose.position.x)
         
         if self.focus_pose_dict:
-            # max_focus_value = max(self.focus_pose_dict.keys())
             max_focus_entry = max(self.focus_pose_dict.items(), key=lambda item: item[1]['focus_value'])
             max_focus_value = max_focus_entry[1]['focus_value']
             if max_focus_value > self.curr_max_fv:
                 self.curr_max_fv = max_focus_value
-                # self.max_focus_pose = self.focus_pose_dict[self.curr_max_fv]['pose'].pose
                 self.max_focus_pose = max_focus_entry[1]['pose'].pose
 
             # Keep moving at the specified speed until current x-position reaches offset x-position
@@ -344,7 +357,7 @@ class PoseStampedCreator(Node):
         
         with open(file_path, 'a', newline='') as csvfile:
             # Extract the keys for the header
-            fieldnames = ['timestamp', 'focus_value','raw_focus_value','ema_last5fv','x','y','z','quaternion','metric']
+            fieldnames = ['timestamp', 'focus_value','ema','dema','ratio','x','y','z','metric']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
             # Write the header only if the file is empty or doesn't exist
@@ -353,22 +366,20 @@ class PoseStampedCreator(Node):
 
             t0 = list(self.focus_pose_dict.keys())[0]
             for timestamp, data in self.focus_pose_dict.items():
-                raw_focus_value = data['raw_data']
                 pose = data['pose'].pose
                 positionx = pose.position.x
                 positiony = pose.position.y
                 positionz = pose.position.z
-                quaternion = f"{pose.orientation.x},{pose.orientation.y},{pose.orientation.z},{pose.orientation.w}"
                 metric = data['metric']
                 row = {
                     'timestamp' : timestamp - t0,
                     'focus_value': data['focus_value'],
-                    'raw_focus_value': raw_focus_value,
-                    'ema_last5fv': data['ema'],
+                    'ema': data['ema'],
+                    'dema': data['dema'],
+                    'ratio': data['ratio'],
                     'x': positionx,
                     'y': positiony,
                     'z': positionz,
-                    'quaternion': quaternion,
                     'metric': metric
                 }
                 writer.writerow(row)
