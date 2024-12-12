@@ -102,6 +102,8 @@ class PoseStampedCreator(Node):
         self.dema_focus_value = 0
         self.previous_dema_focus_value = 0
         self.ratio = 0
+        self.dFV = 0 # computed using dema_focus_value
+        self.smooth_ddFV = 0 # computed using dema_focus_value
         ###########################
 
         self.timer_callback_group = ReentrantCallbackGroup()
@@ -147,6 +149,9 @@ class PoseStampedCreator(Node):
             self.dema_focus_value = 0
             self.previous_dema_focus_value = 0
             self.ratio = 0
+            self.previous_dFV = 0
+            self.dFV = 0 # computed using dema_focus_value
+            self.smooth_ddFV = 0 # computed using dema_focus_value
             self.state = FEEDBACK
             
             while self.counter < 1:
@@ -270,7 +275,7 @@ class PoseStampedCreator(Node):
             self.ema_focus_value = self.curr_focus_value
             self.dema_focus_value = self.curr_focus_value
         K = 2 / (15 + 1)  # Number of data points to average over. Values before last 15 are still considered, just to a lesser degree
-        K_dema = 2 / (5+1)
+        K_dema = 2 / (5 + 1)
 
         self.previous_dema_focus_value = self.dema_focus_value
         self.ema_focus_value = (K * (self.curr_focus_value - self.ema_focus_value)) + self.ema_focus_value
@@ -278,20 +283,32 @@ class PoseStampedCreator(Node):
 
         if self.previous_dema_focus_value != 0:
             self.ratio = self.dema_focus_value / self.previous_dema_focus_value
+        
+        # Compute dFV and ddFV
+        if len(self.focus_pose_dict) == 0:
+            self.dFV = 0
+            ddFV = 0
+        elif len(self.focus_pose_dict) == 1:
+            self.dFV = self.dema_focus_value - self.previous_dema_focus_value
+            ddFV = 0
+        else:
+            self.previous_dFV = self.dFV
+            self.dFV = self.dema_focus_value - self.previous_dema_focus_value
+            ddFV = self.dFV - self.previous_dFV
+            # Smoothing ddFV
+            K_smooth = 2 / (3 + 1)
+            self.smooth_ddFV = (K_smooth * (ddFV - self.smooth_ddFV)) + self.smooth_ddFV
 
         # Save the current focus value and its associated pose
         self.focus_pose_dict[self.timestamp] = {
             'focus_value': self.curr_focus_value,
             'ema': self.ema_focus_value,
             'dema': self.dema_focus_value,
+            'dFV': self.dFV,
+            'smooth_ddFV': self.smooth_ddFV,
             'ratio': self.ratio,
             'pose': pose_world,
             'metric': self.metric}
-
-        # print(f"Dictionary length: {len(self.focus_pose_dict)}")
-        # if self.focus_value_count >= 0: 
-        #     self.focus_value_count += 1
-        #     print(f'focus value count: {self.focus_value_count}')
 
     def simple_feedback(self):
         self.set_parameters([rclpy.parameter.Parameter('twist_started', rclpy.parameter.Parameter.Type.BOOL, True)])
@@ -357,7 +374,7 @@ class PoseStampedCreator(Node):
         
         with open(file_path, 'a', newline='') as csvfile:
             # Extract the keys for the header
-            fieldnames = ['timestamp', 'focus_value','ema','dema','ratio','x','y','z','metric']
+            fieldnames = ['timestamp', 'focus_value','ema','dema','dFV','smooth_ddFV','ratio','x','y','z','metric']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
             # Write the header only if the file is empty or doesn't exist
@@ -376,6 +393,8 @@ class PoseStampedCreator(Node):
                     'focus_value': data['focus_value'],
                     'ema': data['ema'],
                     'dema': data['dema'],
+                    'dFV': data['dFV'],
+                    'smooth_ddFV': data['smooth_ddFV'],
                     'ratio': data['ratio'],
                     'x': positionx,
                     'y': positiony,

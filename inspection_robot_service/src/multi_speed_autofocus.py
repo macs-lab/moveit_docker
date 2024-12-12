@@ -31,8 +31,9 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from datetime import datetime
 
-MOVING_DISTANCE = 0.04
+MOVING_DISTANCE = 0.15
 SPEED = 0.25 # pos is forward. 0.2 and under is too slow, circular motion on robot is visible
+kv = 1.0  # Example value for kv, adjust as needed
 
 IDLE = 0
 FEEDBACK = 1
@@ -42,6 +43,7 @@ class PoseStampedCreator(Node):
 
     def __init__(self):
         super().__init__('pose_stamped_creator')
+        self.timestamp = 0
 
         self.state = SLEEP_INIT # IDLE        
         self.counter = 0
@@ -95,13 +97,14 @@ class PoseStampedCreator(Node):
         # Sobel initialize
         self.focus_pose_dict = {}
         self.new_focus_value_sub = self.create_subscription(FocusValue, '/image_raw/compressed/focus_value', self.new_focus_value_callback, 10)
-        self.new_focus_value_sub # prevent unused variable warning
         self.curr_max_fv = 0
         self.max_focus_pose = None
-        
         self.ema_focus_value = 0
-        self.curr_focus_value = 0
-        self.previous_ema = 0
+        self.dema_focus_value = 0
+        self.previous_dema_focus_value = 0
+        self.ratio = 0
+        self.dFV = 0 # computed using dema_focus_value
+        self.smooth_ddFV = 0 # computed using dema_focus_value
         ###########################
 
         self.timer_callback_group = ReentrantCallbackGroup()
@@ -116,7 +119,7 @@ class PoseStampedCreator(Node):
 
 
     # Move to the pose we received
-    def on_timer(self):
+    def on_timer(self):            
         if self.state == FEEDBACK:
             self.simple_feedback()
             
@@ -132,14 +135,6 @@ class PoseStampedCreator(Node):
             self.start_pose.pose.position.y =  self.tf_wt_start.transform.translation.y
             self.start_pose.pose.position.z =  self.tf_wt_start.transform.translation.z
             self.start_pose.pose.orientation =  self.tf_wt_start.transform.rotation
-
-            # Create start_offset_pose which is 2 cm behind start_pose on the x-axis
-            self.start_offset_pose = PoseStamped()
-            self.start_offset_pose.header.frame_id = 'world'
-            self.start_offset_pose.pose.position.x = self.start_pose.pose.position.x - 0.03
-            self.start_offset_pose.pose.position.y = self.start_pose.pose.position.y
-            self.start_offset_pose.pose.position.z = self.start_pose.pose.position.z
-            self.start_offset_pose.pose.orientation = self.start_pose.pose.orientation
             self.state = IDLE
 
     
@@ -147,24 +142,29 @@ class PoseStampedCreator(Node):
         self.counter = 0
         if self.state == IDLE:
             self.initial_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            self.send_request_world(self.start_pose.pose)
+            time.sleep(2) # Wait for the robot to move to the start pose. Necessary, otherwise sometimes the robot doesn't move to the start pose
+            self.curr_max_fv = 0
+            self.focus_pose_dict = {}
+            self.ema_focus_value = 0
+            self.dema_focus_value = 0
+            self.previous_dema_focus_value = 0
+            self.ratio = 0
+            self.previous_dFV = 0
+            self.dFV = 0 # computed using dema_focus_value
+            self.smooth_ddFV = 0 # computed using dema_focus_value
+            self.state = FEEDBACK
             
-            print('entering idle')
             while self.counter < 1:
                 if self.state == IDLE:
-                    self.send_request_world(self.start_offset_pose.pose)
+                    self.send_request_world(self.start_pose.pose)
                     time.sleep(2)  # Wait for the robot to move to the start pose
-                    # Decided to move resets here because I want stuff in the csv starting after the robot moves to start_offset
-                    self.curr_max_fv = 0
-                    self.focus_pose_dict = {}
-                    self.ema_focus_value = 0
-                    self.curr_focus_value = 0
-                    self.previous_ema = 0
                     self.state = FEEDBACK
                 time.sleep(1)
             
-            self.send_request_world(self.max_focus_pose)
-            time.sleep(2) # Wait for the robot to move to the max focus pose. Necessary, otherwise sometimes the robot doesn't move to the max focus pose
-            self.get_logger().info(f'MAX FOCUS VALUE: {self.curr_max_fv}')
+            # self.send_request_world(self.max_focus_pose)
+            # time.sleep(2) # Wait for the robot to move to the max focus pose. Necessary, otherwise sometimes the robot doesn't move to the max focus pose
+            # self.get_logger().info(f'MAX FOCUS VALUE: {self.curr_max_fv}')
             return response
 
     def send_request_world(self,pose_map):
@@ -197,7 +197,6 @@ class PoseStampedCreator(Node):
         future = self.pose_client.call_async(req)
         future.add_done_callback(self.response_callback_world)
         self.state = IDLE # State change needs to occur after moving to pose with max focus
-        print('moved')
         return
     def response_callback_world(self, future):
         try:
@@ -246,97 +245,124 @@ class PoseStampedCreator(Node):
 
     def new_focus_value_callback(self, msg):
         self.new_time = msg.header.stamp
-        self.new_curr_focus_value = msg.data
-        self.raw_focus_value = msg.raw_data
+        self.curr_focus_value = msg.data # Raw data. Filtering would now be using EMA
         self.metric = msg.metric
 
         try:
-            try:
-                # Attempt to get the transform at the exact requested time
-                tf_wt = self.tf_buffer.lookup_transform('world', 'tool0', self.new_time)
-            except tf2_ros.TransformException as ex:
-                # self.get_logger().info(f'Could not fine tune. Using latest known transform instead') # {ex}')
-                # Fallback to the latest available transform within a 1-second duration
-                tf_wt = self.tf_buffer.lookup_transform('world', 'tool0', rclpy.time.Time(), rclpy.time.Duration(seconds=1.0))
-            
-            pose_world = PoseStamped()
-            pose_world.header.frame_id = 'world'
-            pose_world.pose.position.x = tf_wt.transform.translation.x
-            pose_world.pose.position.y = tf_wt.transform.translation.y
-            pose_world.pose.position.z = tf_wt.transform.translation.z
-            pose_world.pose.orientation = tf_wt.transform.rotation
+            # Attempt to get the transform at the exact requested time
+            tf_wt = self.tf_buffer.lookup_transform('world', 'tool0', self.new_time)
+        except tf2_ros.TransformException as ex:
+            # self.get_logger().info(f'Could not fine tune. Using latest known transform instead') # {ex}')
+            # Fallback to the latest available transform within a 1-second duration
+            tf_wt = self.tf_buffer.lookup_transform('world', 'tool0', rclpy.time.Time(), rclpy.time.Duration(seconds=1.0))
+        
+        pose_world = PoseStamped()
+        pose_world.header.frame_id = 'world'
+        pose_world.pose.position.x = tf_wt.transform.translation.x
+        pose_world.pose.position.y = tf_wt.transform.translation.y
+        pose_world.pose.position.z = tf_wt.transform.translation.z
+        pose_world.pose.orientation = tf_wt.transform.rotation
 
-            # Convert Time msg to float value
-            timestamp = self.new_time.sec + self.new_time.nanosec / 1e9
+        # Convert Time msg to float value
+        self.timestamp = self.new_time.sec + self.new_time.nanosec / 1e9
 
-            # Save the current focus value and its associated pose
-            self.focus_pose_dict[self.new_curr_focus_value] = {'raw_data': self.raw_focus_value, 'pose': pose_world, 'timestamp': timestamp, 'metric': self.metric}
+        # Ensure unique timestamp by adding a small increment if a duplicate is detected
+        # while self.timestamp in self.focus_pose_dict:
+        #     self.timestamp += 0.01
+        #     print('time shift')
+        
+        # Calculate the EMA
+        if self.ema_focus_value == 0:
+            self.ema_focus_value = self.curr_focus_value
+            self.dema_focus_value = self.curr_focus_value
+        K = 2 / (15 + 1)  # Number of data points to average over. Values before last 15 are still considered, just to a lesser degree
+        K_dema = 2 / (5 + 1)
 
-        except TransformException as ex:
-            self.get_logger().info(
-                f'Could not fine tune. Still works fine') # {ex}')
-            return
-    
+        self.previous_dema_focus_value = self.dema_focus_value
+        self.ema_focus_value = (K * (self.curr_focus_value - self.ema_focus_value)) + self.ema_focus_value
+        self.dema_focus_value = (K_dema * (self.ema_focus_value - self.dema_focus_value)) + self.dema_focus_value
+
+        if self.previous_dema_focus_value != 0:
+            self.ratio = self.dema_focus_value / self.previous_dema_focus_value
+        
+        # Compute dFV and ddFV
+        if len(self.focus_pose_dict) == 0:
+            self.dFV = 0
+            ddFV = 0
+        elif len(self.focus_pose_dict) == 1:
+            self.dFV = self.dema_focus_value - self.previous_dema_focus_value
+            ddFV = 0
+        else:
+            self.previous_dFV = self.dFV
+            self.dFV = self.dema_focus_value - self.previous_dema_focus_value
+            ddFV = self.dFV - self.previous_dFV
+            # Smoothing ddFV
+            K_smooth = 2 / (3 + 1)
+            self.smooth_ddFV = (K_smooth * (ddFV - self.smooth_ddFV)) + self.smooth_ddFV
+
+        # Save the current focus value and its associated pose
+        self.focus_pose_dict[self.timestamp] = {
+            'focus_value': self.curr_focus_value,
+            'ema': self.ema_focus_value,
+            'dema': self.dema_focus_value,
+            'dFV': self.dFV,
+            'smooth_ddFV': self.smooth_ddFV,
+            'ratio': self.ratio,
+            'pose': pose_world,
+            'metric': self.metric}
+
     def simple_feedback(self):
         self.set_parameters([rclpy.parameter.Parameter('twist_started', rclpy.parameter.Parameter.Type.BOOL, True)])
         self.twist_started = self.get_parameter('twist_started').value
+
+        # Current and Offset pose to move forward
+        curr_time_fb = rclpy.time.Time()
+        tf_wt_fb = self.tf_buffer.lookup_transform('world', 'tool0', curr_time_fb)
+
+        current_pose = PoseStamped()
+        current_pose.header.frame_id = 'world'
+        current_pose.pose.position.x = tf_wt_fb.transform.translation.x
+        current_pose.pose.position.y = tf_wt_fb.transform.translation.y
+        current_pose.pose.position.z = tf_wt_fb.transform.translation.z
+        current_pose.pose.orientation = tf_wt_fb.transform.rotation
+        
+        if not hasattr(self, 'offset_pose'):
+            self.offset_pose = PoseStamped()
+            self.offset_pose.header.frame_id = current_pose.header.frame_id
+            self.offset_pose.pose.position.x = current_pose.pose.position.x + MOVING_DISTANCE # not sure why it's x, but tested and this is what worked
+            self.offset_pose.pose.position.y = current_pose.pose.position.y 
+            self.offset_pose.pose.position.z = current_pose.pose.position.z
+            self.offset_pose.pose.orientation = current_pose.pose.orientation
+            print(self.offset_pose.pose.position.x, current_pose.pose.position.x)
         
         if self.focus_pose_dict:
-            self.curr_max_fv = max(self.focus_pose_dict.keys())
-            self.max_focus_pose = self.focus_pose_dict[self.curr_max_fv]['pose'].pose
-            
-            K = 2 / (5 + 1)  # Number of data points to average over. Values before last 5 are still considered, just to a lesser degree
-            self.ema_focus_value = (K * (self.new_curr_focus_value - self.ema_focus_value)) + self.ema_focus_value
+            # max_focus_entry = max(self.focus_pose_dict.items(), key=lambda item: item[1]['focus_value'])
+            # max_focus_value = max_focus_entry[1]['focus_value']
+            # if max_focus_value > self.curr_max_fv:
+            #     self.curr_max_fv = max_focus_value
+            #     self.max_focus_pose = max_focus_entry[1]['pose'].pose
 
-            if (self.previous_ema - self.ema_focus_value) > 2:
+            if self.previous_dFV > 0 and self.dFV < 0 and self.smooth_ddFV < 0:
                 self.set_parameters([rclpy.parameter.Parameter('twist_started', rclpy.parameter.Parameter.Type.BOOL, False)])
                 self.twist_started = self.get_parameter('twist_started').value
-                print('reached offset')
+                print('Completed autofocus!')
 
                 self.save_focus_pose_dict_to_csv()
                 self.focus_pose_dict = {}
                 self.counter += 1
                 print('counter =', self.counter)
                 self.state = IDLE
-            
-            print(self.new_curr_focus_value, self.curr_max_fv, self.ema_focus_value, self.previous_ema)
-            self.previous_ema = self.ema_focus_value
-
-        return
-    
-    def multi_speed_feedback(self):
-        self.set_parameters([rclpy.parameter.Parameter('twist_started', rclpy.parameter.Parameter.Type.BOOL, True)])
-        self.twist_started = self.get_parameter('twist_started').value
-        
-        if self.focus_pose_dict:
-            self.curr_max_fv = max(self.focus_pose_dict.keys())
-            self.max_focus_pose = self.focus_pose_dict[self.curr_max_fv]['pose'].pose
-            
-            K = 2 / (5 + 1)  # Number of data points to average over. Values before last 5 are still considered, just to a lesser degree
-            self.ema_focus_value = (K * (self.new_curr_focus_value - self.ema_focus_value)) + self.ema_focus_value
-
-            ratio = self.new_curr_focus_value / self.ema_focus_value
-
-            if ratio <1.1 and ratio >0.9:
-                self.declare_parameter('y_twist_speed', SPEED, descriptor=ParameterDescriptor(dynamic_typing=True))
-
-            if (self.previous_ema - self.ema_focus_value) > 2:
-                self.set_parameters([rclpy.parameter.Parameter('twist_started', rclpy.parameter.Parameter.Type.BOOL, False)])
-                self.twist_started = self.get_parameter('twist_started').value
-                print('reached offset')
-
-                self.save_focus_pose_dict_to_csv()
-                self.focus_pose_dict = {}
-                self.counter += 1
-                print('counter =', self.counter)
-                self.state = IDLE
-            
-            print(self.new_curr_focus_value, self.curr_max_fv, self.ema_focus_value, self.previous_ema)
-            self.previous_ema = self.ema_focus_value
+            elif self.smooth_ddFV < 2: # account for noise
+                SPEED = kv*self.ratio
+                print('kv*r, SPEED =', SPEED)
+            else:
+                SPEED = kv/self.ratio
+                print('kv/r, SPEED =', SPEED)
 
         return
     
     def save_focus_pose_dict_to_csv(self):
+        self.focus_value_count = -1
         # Define the directory and file name
         directory = '/data/'
         # Generate the initial timestamp if it doesn't exist
@@ -354,31 +380,31 @@ class PoseStampedCreator(Node):
         
         with open(file_path, 'a', newline='') as csvfile:
             # Extract the keys for the header
-            fieldnames = ['focus_value','raw_focus_value','x','y','z','quaternion','timestamp', 'metric']
+            fieldnames = ['timestamp', 'focus_value','ema','dema','dFV','smooth_ddFV','ratio','x','y','z','metric']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
             # Write the header only if the file is empty or doesn't exist
             if not file_exists or os.stat(file_path).st_size == 0:
                 writer.writeheader()
 
-            t0 = self.focus_pose_dict[list(self.focus_pose_dict.keys())[0]]['timestamp']
-            for focus_value, data in self.focus_pose_dict.items():
-                raw_focus_value = data['raw_data']
+            t0 = list(self.focus_pose_dict.keys())[0]
+            for timestamp, data in self.focus_pose_dict.items():
                 pose = data['pose'].pose
                 positionx = pose.position.x
                 positiony = pose.position.y
                 positionz = pose.position.z
-                quaternion = f"{pose.orientation.x},{pose.orientation.y},{pose.orientation.z},{pose.orientation.w}"
-                timestamp = data['timestamp']
                 metric = data['metric']
                 row = {
-                    'focus_value': focus_value,
-                    'raw_focus_value': raw_focus_value,
+                    'timestamp' : timestamp - t0,
+                    'focus_value': data['focus_value'],
+                    'ema': data['ema'],
+                    'dema': data['dema'],
+                    'dFV': data['dFV'],
+                    'smooth_ddFV': data['smooth_ddFV'],
+                    'ratio': data['ratio'],
                     'x': positionx,
                     'y': positiony,
                     'z': positionz,
-                    'quaternion': quaternion,
-                    'timestamp' : timestamp - t0,
                     'metric': metric
                 }
                 writer.writerow(row)
