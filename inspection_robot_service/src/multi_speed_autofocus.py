@@ -32,8 +32,7 @@ from rclpy.executors import MultiThreadedExecutor
 from datetime import datetime
 
 MOVING_DISTANCE = 0.15
-SPEED = 0.25 # pos is forward. 0.2 and under is too slow, circular motion on robot is visible
-kv = 1.0  # Example value for kv, adjust as needed
+kv = 0.5  # Example value for kv, adjust as needed
 
 IDLE = 0
 FEEDBACK = 1
@@ -48,6 +47,7 @@ class PoseStampedCreator(Node):
         self.state = SLEEP_INIT # IDLE        
         self.counter = 0
         self.initial_timestamp = None
+        self.speed = 0.25
 
         # Create a client to the service
         self.pose_client = self.create_client(MoveToPose, '/inspection/move_to_pose')
@@ -79,7 +79,7 @@ class PoseStampedCreator(Node):
         # Dynamic reconfigure twist_started
         self.declare_parameter('twist_started', False, descriptor=ParameterDescriptor(dynamic_typing=True)) # dynamic_typing=True makes the parameter dynamically reconfigurable
         self.declare_parameter('x_twist_speed', 0.0, descriptor=ParameterDescriptor(dynamic_typing=True))
-        self.declare_parameter('y_twist_speed', SPEED, descriptor=ParameterDescriptor(dynamic_typing=True))
+        self.declare_parameter('y_twist_speed', self.speed, descriptor=ParameterDescriptor(dynamic_typing=True))
         self.declare_parameter('z_twist_speed', 0.0, descriptor=ParameterDescriptor(dynamic_typing=True)) # declare twist_speed as a parameter
         self.declare_parameter('x_twist_angular', 0.0, descriptor=ParameterDescriptor(dynamic_typing=True))
         self.declare_parameter('y_twist_angular', 0.0, descriptor=ParameterDescriptor(dynamic_typing=True))
@@ -265,18 +265,16 @@ class PoseStampedCreator(Node):
 
         # Convert Time msg to float value
         self.timestamp = self.new_time.sec + self.new_time.nanosec / 1e9
-
-        # Ensure unique timestamp by adding a small increment if a duplicate is detected
-        # while self.timestamp in self.focus_pose_dict:
-        #     self.timestamp += 0.01
-        #     print('time shift')
         
         # Calculate the EMA
         if self.ema_focus_value == 0:
             self.ema_focus_value = self.curr_focus_value
             self.dema_focus_value = self.curr_focus_value
-        K = 2 / (15 + 1)  # Number of data points to average over. Values before last 15 are still considered, just to a lesser degree
-        K_dema = 2 / (5 + 1)
+        K = 2 / (15 + 1)  # EMA smoothing factor for the last 15 periods
+        K_dema = 2 / (5 + 1)  # ZLEMA smoothing factor for the last 5 periods
+
+        # Using ZLEMA (zero lag exponential moving average) to compensate for lag
+        lag = (5-1)/2
 
         self.previous_dema_focus_value = self.dema_focus_value
         self.ema_focus_value = (K * (self.curr_focus_value - self.ema_focus_value)) + self.ema_focus_value
@@ -309,7 +307,8 @@ class PoseStampedCreator(Node):
             'smooth_ddFV': self.smooth_ddFV,
             'ratio': self.ratio,
             'pose': pose_world,
-            'metric': self.metric}
+            'metric': self.metric
+            }
 
     def simple_feedback(self):
         self.set_parameters([rclpy.parameter.Parameter('twist_started', rclpy.parameter.Parameter.Type.BOOL, True)])
@@ -326,39 +325,29 @@ class PoseStampedCreator(Node):
         current_pose.pose.position.z = tf_wt_fb.transform.translation.z
         current_pose.pose.orientation = tf_wt_fb.transform.rotation
         
-        if not hasattr(self, 'offset_pose'):
-            self.offset_pose = PoseStamped()
-            self.offset_pose.header.frame_id = current_pose.header.frame_id
-            self.offset_pose.pose.position.x = current_pose.pose.position.x + MOVING_DISTANCE # not sure why it's x, but tested and this is what worked
-            self.offset_pose.pose.position.y = current_pose.pose.position.y 
-            self.offset_pose.pose.position.z = current_pose.pose.position.z
-            self.offset_pose.pose.orientation = current_pose.pose.orientation
-            print(self.offset_pose.pose.position.x, current_pose.pose.position.x)
-        
         if self.focus_pose_dict:
-            # max_focus_entry = max(self.focus_pose_dict.items(), key=lambda item: item[1]['focus_value'])
-            # max_focus_value = max_focus_entry[1]['focus_value']
-            # if max_focus_value > self.curr_max_fv:
-            #     self.curr_max_fv = max_focus_value
-            #     self.max_focus_pose = max_focus_entry[1]['pose'].pose
-
-            if self.previous_dFV > 0 and self.dFV < 0 and self.smooth_ddFV < 0:
+            if self.smooth_ddFV < -0.1 and self.dFV > 0: # account for noise
+                self.speed = kv*(self.ratio-kv)
+                self.set_parameters([rclpy.parameter.Parameter('y_twist_speed', rclpy.parameter.Parameter.Type.DOUBLE, self.speed)])
+                self.y_twist_speed = self.get_parameter('y_twist_speed').value
+                print('dFV, ddFV, kv*r',self.dFV,self.smooth_ddFV,self.speed,self.y_twist_speed)
+            elif self.previous_dFV > 0 and self.dFV < 0 and self.smooth_ddFV < -0.1: # dFV approximately 0 and ddFV negative (account for noise)
                 self.set_parameters([rclpy.parameter.Parameter('twist_started', rclpy.parameter.Parameter.Type.BOOL, False)])
                 self.twist_started = self.get_parameter('twist_started').value
                 print('Completed autofocus!')
+                print('dFV, ddFV',self.dFV,self.smooth_ddFV)
 
                 self.save_focus_pose_dict_to_csv()
                 self.focus_pose_dict = {}
                 self.counter += 1
                 print('counter =', self.counter)
                 self.state = IDLE
-            elif self.smooth_ddFV < 2: # account for noise
-                SPEED = kv*self.ratio
-                print('kv*r, SPEED =', SPEED)
             else:
-                SPEED = kv/self.ratio
-                print('kv/r, SPEED =', SPEED)
-
+                print(self.smooth_ddFV)
+                self.speed = kv/self.ratio
+                self.set_parameters([rclpy.parameter.Parameter('y_twist_speed', rclpy.parameter.Parameter.Type.DOUBLE, self.speed)])
+                self.y_twist_speed = self.get_parameter('y_twist_speed').value
+                print('dFV, ddFV, kv/r',self.dFV,self.smooth_ddFV,self.speed,self.y_twist_speed)
         return
     
     def save_focus_pose_dict_to_csv(self):
