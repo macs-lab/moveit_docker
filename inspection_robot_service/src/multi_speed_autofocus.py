@@ -270,15 +270,49 @@ class PoseStampedCreator(Node):
         if self.ema_focus_value == 0:
             self.ema_focus_value = self.curr_focus_value
             self.dema_focus_value = self.curr_focus_value
-        K = 2 / (15 + 1)  # EMA smoothing factor for the last 15 periods
-        K_dema = 2 / (5 + 1)  # ZLEMA smoothing factor for the last 5 periods
 
-        # Using ZLEMA (zero lag exponential moving average) to compensate for lag
-        lag = (5-1)/2
+        # Smoothing factors
+        N_ema = 15
+        N_dema = 3
+        K = 2 / (N_ema + 1)
+        K_dema = 2 / (N_dema + 1) 
+        lag_ema = (N_ema - 1) // 2
+        lag_dema = (N_dema - 1) // 2
 
         self.previous_dema_focus_value = self.dema_focus_value
-        self.ema_focus_value = (K * (self.curr_focus_value - self.ema_focus_value)) + self.ema_focus_value
-        self.dema_focus_value = (K_dema * (self.ema_focus_value - self.dema_focus_value)) + self.dema_focus_value
+        # self.ema_focus_value = (K * (self.curr_focus_value - self.ema_focus_value)) + self.ema_focus_value
+        # self.dema_focus_value = (K_dema * (self.ema_focus_value - self.dema_focus_value)) + self.dema_focus_value
+
+        # ZLEMA calculation
+        # zlema_price = self.curr_focus_value + (self.curr_focus_value - self.focus_pose_dict.get(self.timestamp - lag_ema, {'focus_value': self.curr_focus_value})['focus_value'])
+        # self.ema_focus_value = (K * (zlema_price - self.ema_focus_value)) + self.ema_focus_value
+
+        # # ZLEMA for DEMA
+        # zlema_price_dema = self.ema_focus_value + (self.ema_focus_value - self.focus_pose_dict.get(self.timestamp - lag_dema, {'ema': self.ema_focus_value})['ema'])
+        # self.dema_focus_value = (K_dema * (zlema_price_dema - self.dema_focus_value)) + self.dema_focus_value
+
+        # Retrieve the value from lag_ema data points ago
+        keys = list(self.focus_pose_dict.keys())
+        if len(keys) >= lag_ema:
+            lagged_key_ema = keys[-lag_ema]
+            lagged_focus_value = self.focus_pose_dict[lagged_key_ema]['focus_value']
+        else:
+            lagged_focus_value = self.curr_focus_value
+
+        # Retrieve the value from lag_dema data points ago
+        if len(keys) >= lag_dema:
+            lagged_key_dema = keys[-lag_dema]
+            lagged_ema_value = self.focus_pose_dict[lagged_key_dema]['ema']
+        else:
+            lagged_ema_value = self.ema_focus_value
+
+        # ZLEMA calculation
+        zlema_price = self.curr_focus_value + (self.curr_focus_value - lagged_focus_value)
+        self.ema_focus_value = (K * (zlema_price - self.ema_focus_value)) + self.ema_focus_value
+
+        # ZLEMA for DEMA
+        zlema_price_dema = self.ema_focus_value + (self.ema_focus_value - lagged_ema_value)
+        self.dema_focus_value = (K_dema * (zlema_price_dema - self.dema_focus_value)) + self.dema_focus_value
 
         if self.previous_dema_focus_value != 0:
             self.ratio = self.dema_focus_value / self.previous_dema_focus_value
@@ -343,7 +377,6 @@ class PoseStampedCreator(Node):
                 print('counter =', self.counter)
                 self.state = IDLE
             else:
-                print(self.smooth_ddFV)
                 self.speed = kv/self.ratio
                 self.set_parameters([rclpy.parameter.Parameter('y_twist_speed', rclpy.parameter.Parameter.Type.DOUBLE, self.speed)])
                 self.y_twist_speed = self.get_parameter('y_twist_speed').value
