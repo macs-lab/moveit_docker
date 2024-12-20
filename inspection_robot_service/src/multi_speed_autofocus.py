@@ -97,14 +97,16 @@ class PoseStampedCreator(Node):
         # Sobel initialize
         self.focus_pose_dict = {}
         self.new_focus_value_sub = self.create_subscription(FocusValue, '/image_raw/compressed/focus_value', self.new_focus_value_callback, 10)
-        self.curr_max_fv = 0
-        self.max_focus_pose = None
         self.ema_focus_value = 0
+        self.ema_focus_value2 = 0
         self.dema_focus_value = 0
         self.previous_dema_focus_value = 0
         self.ratio = 0
         self.dFV = 0 # computed using dema_focus_value
         self.smooth_ddFV = 0 # computed using dema_focus_value
+        self.previous_dFV = 0
+        self.keys = None
+        self.second_to_last_pose = None
         ###########################
 
         self.timer_callback_group = ReentrantCallbackGroup()
@@ -144,15 +146,17 @@ class PoseStampedCreator(Node):
             self.initial_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             self.send_request_world(self.start_pose.pose)
             time.sleep(2) # Wait for the robot to move to the start pose. Necessary, otherwise sometimes the robot doesn't move to the start pose
-            self.curr_max_fv = 0
             self.focus_pose_dict = {}
             self.ema_focus_value = 0
+            self.ema_focus_value2 = 0
             self.dema_focus_value = 0
             self.previous_dema_focus_value = 0
             self.ratio = 0
             self.previous_dFV = 0
             self.dFV = 0 # computed using dema_focus_value
             self.smooth_ddFV = 0 # computed using dema_focus_value
+            self.keys = None
+            self.second_to_last_pose = None
             self.state = FEEDBACK
             
             while self.counter < 1:
@@ -162,9 +166,9 @@ class PoseStampedCreator(Node):
                     self.state = FEEDBACK
                 time.sleep(1)
             
-            # self.send_request_world(self.max_focus_pose)
-            # time.sleep(2) # Wait for the robot to move to the max focus pose. Necessary, otherwise sometimes the robot doesn't move to the max focus pose
-            # self.get_logger().info(f'MAX FOCUS VALUE: {self.curr_max_fv}')
+            self.send_request_world(self.second_to_last_pose)
+            time.sleep(2)
+            
             return response
 
     def send_request_world(self,pose_map):
@@ -267,52 +271,17 @@ class PoseStampedCreator(Node):
         self.timestamp = self.new_time.sec + self.new_time.nanosec / 1e9
         
         # Calculate the EMA
+        N_ema = 20 # Doesn't work consistently with 15
         if self.ema_focus_value == 0:
             self.ema_focus_value = self.curr_focus_value
+            self.ema_focus_value2 = self.curr_focus_value  # For DEMA calculation
             self.dema_focus_value = self.curr_focus_value
-
-        # Smoothing factors
-        N_ema = 15
-        N_dema = 3
-        K = 2 / (N_ema + 1)
-        K_dema = 2 / (N_dema + 1) 
-        lag_ema = (N_ema - 1) // 2
-        lag_dema = (N_dema - 1) // 2
+        K = 2 / (N_ema + 1)  # EMA smoothing factor for the last 15 periods
 
         self.previous_dema_focus_value = self.dema_focus_value
-        # self.ema_focus_value = (K * (self.curr_focus_value - self.ema_focus_value)) + self.ema_focus_value
-        # self.dema_focus_value = (K_dema * (self.ema_focus_value - self.dema_focus_value)) + self.dema_focus_value
-
-        # ZLEMA calculation
-        # zlema_price = self.curr_focus_value + (self.curr_focus_value - self.focus_pose_dict.get(self.timestamp - lag_ema, {'focus_value': self.curr_focus_value})['focus_value'])
-        # self.ema_focus_value = (K * (zlema_price - self.ema_focus_value)) + self.ema_focus_value
-
-        # # ZLEMA for DEMA
-        # zlema_price_dema = self.ema_focus_value + (self.ema_focus_value - self.focus_pose_dict.get(self.timestamp - lag_dema, {'ema': self.ema_focus_value})['ema'])
-        # self.dema_focus_value = (K_dema * (zlema_price_dema - self.dema_focus_value)) + self.dema_focus_value
-
-        # Retrieve the value from lag_ema data points ago
-        keys = list(self.focus_pose_dict.keys())
-        if len(keys) >= lag_ema:
-            lagged_key_ema = keys[-lag_ema]
-            lagged_focus_value = self.focus_pose_dict[lagged_key_ema]['focus_value']
-        else:
-            lagged_focus_value = self.curr_focus_value
-
-        # Retrieve the value from lag_dema data points ago
-        if len(keys) >= lag_dema:
-            lagged_key_dema = keys[-lag_dema]
-            lagged_ema_value = self.focus_pose_dict[lagged_key_dema]['ema']
-        else:
-            lagged_ema_value = self.ema_focus_value
-
-        # ZLEMA calculation
-        zlema_price = self.curr_focus_value + (self.curr_focus_value - lagged_focus_value)
-        self.ema_focus_value = (K * (zlema_price - self.ema_focus_value)) + self.ema_focus_value
-
-        # ZLEMA for DEMA
-        zlema_price_dema = self.ema_focus_value + (self.ema_focus_value - lagged_ema_value)
-        self.dema_focus_value = (K_dema * (zlema_price_dema - self.dema_focus_value)) + self.dema_focus_value
+        self.ema_focus_value = (K * (self.curr_focus_value - self.ema_focus_value)) + self.ema_focus_value
+        self.ema_focus_value2 = (K * (self.ema_focus_value - self.ema_focus_value2)) + self.ema_focus_value2
+        self.dema_focus_value = 2 * self.ema_focus_value - self.ema_focus_value2
 
         if self.previous_dema_focus_value != 0:
             self.ratio = self.dema_focus_value / self.previous_dema_focus_value
@@ -365,11 +334,14 @@ class PoseStampedCreator(Node):
                 self.set_parameters([rclpy.parameter.Parameter('y_twist_speed', rclpy.parameter.Parameter.Type.DOUBLE, self.speed)])
                 self.y_twist_speed = self.get_parameter('y_twist_speed').value
                 print('dFV, ddFV, kv*r',self.dFV,self.smooth_ddFV,self.speed,self.y_twist_speed)
-            elif self.previous_dFV > 0 and self.dFV < 0 and self.smooth_ddFV < -0.1: # dFV approximately 0 and ddFV negative (account for noise)
+            elif self.previous_dFV > 2 and self.dFV < 2 and self.smooth_ddFV < -0.1: # dFV approximately 0 and ddFV negative (account for noise)
                 self.set_parameters([rclpy.parameter.Parameter('twist_started', rclpy.parameter.Parameter.Type.BOOL, False)])
                 self.twist_started = self.get_parameter('twist_started').value
                 print('Completed autofocus!')
                 print('dFV, ddFV',self.dFV,self.smooth_ddFV)
+
+                self.keys = sorted(self.focus_pose_dict.keys())
+                self.second_to_last_pose = self.focus_pose_dict[self.keys[-2]]['pose'].pose
 
                 self.save_focus_pose_dict_to_csv()
                 self.focus_pose_dict = {}
