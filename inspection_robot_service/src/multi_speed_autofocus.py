@@ -32,7 +32,7 @@ from rclpy.executors import MultiThreadedExecutor
 from datetime import datetime
 
 MOVING_DISTANCE = 0.15
-kv = 0.5  # Example value for kv, adjust as needed
+kv = 0.8  # Example value for kv, adjust as needed
 
 IDLE = 0
 FEEDBACK = 1
@@ -106,7 +106,7 @@ class PoseStampedCreator(Node):
         self.smooth_ddFV = 0 # computed using dema_focus_value
         self.previous_dFV = 0
         self.keys = None
-        self.second_to_last_pose = None
+        self.max_pose = Pose()
         ###########################
 
         self.timer_callback_group = ReentrantCallbackGroup()
@@ -156,7 +156,7 @@ class PoseStampedCreator(Node):
             self.dFV = 0 # computed using dema_focus_value
             self.smooth_ddFV = 0 # computed using dema_focus_value
             self.keys = None
-            self.second_to_last_pose = None
+            self.max_pose = Pose()
             self.state = FEEDBACK
             
             while self.counter < 1:
@@ -166,8 +166,28 @@ class PoseStampedCreator(Node):
                     self.state = FEEDBACK
                 time.sleep(1)
             
-            self.send_request_world(self.second_to_last_pose)
-            time.sleep(2)
+            self.send_request_world(self.max_pose.pose)
+            time.sleep(1)
+
+            # Get the current time and pose after moving to max_pose
+            curr_time = rclpy.clock.Clock().now()
+            # Create a new timestamp for the maximum focus entry
+            final_timestamp = curr_time.nanoseconds / 1e9  # Ensure a unique timestamp
+
+            # Save the maximum focus value and its associated pose
+            self.focus_pose_dict[final_timestamp] = {
+                'focus_value': self.curr_focus_value,
+                'ema': self.ema_focus_value,
+                'dema': self.dema_focus_value,
+                'dFV': self.dFV,
+                'smooth_ddFV': self.smooth_ddFV,
+                'ratio': self.ratio,
+                'pose': self.max_pose,
+                'metric': self.metric
+            }
+            
+            self.save_focus_pose_dict_to_csv()
+            self.focus_pose_dict = {}
             
             return response
 
@@ -330,21 +350,27 @@ class PoseStampedCreator(Node):
         
         if self.focus_pose_dict:
             if self.smooth_ddFV < -0.1 and self.dFV > 0: # account for noise
-                self.speed = kv*(self.ratio-kv)
+                self.speed = kv*(self.ratio-0.5) # kv*(self.ratio-kv)
                 self.set_parameters([rclpy.parameter.Parameter('y_twist_speed', rclpy.parameter.Parameter.Type.DOUBLE, self.speed)])
                 self.y_twist_speed = self.get_parameter('y_twist_speed').value
-                print('dFV, ddFV, kv*r',self.dFV,self.smooth_ddFV,self.speed,self.y_twist_speed)
+                print('dFV, ddFV, kv*r',self.dFV,self.smooth_ddFV,self.speed)
+            # elif self.smooth_ddFV > 0.1 and self.dFV < 0: # account for noise
+            #     self.speed = -kv*(self.ratio-0.5) # kv*(self.ratio-kv)
+            #     self.set_parameters([rclpy.parameter.Parameter('y_twist_speed', rclpy.parameter.Parameter.Type.DOUBLE, self.speed)])
+            #     self.y_twist_speed = self.get_parameter('y_twist_speed').value
+            #     print('dFV, ddFV, -kv*r',self.dFV,self.smooth_ddFV,self.speed,self.y_twist_speed)
             elif self.previous_dFV > 2 and self.dFV < 2 and self.smooth_ddFV < -0.1: # dFV approximately 0 and ddFV negative (account for noise)
                 self.set_parameters([rclpy.parameter.Parameter('twist_started', rclpy.parameter.Parameter.Type.BOOL, False)])
                 self.twist_started = self.get_parameter('twist_started').value
                 print('Completed autofocus!')
                 print('dFV, ddFV',self.dFV,self.smooth_ddFV)
 
-                self.keys = sorted(self.focus_pose_dict.keys())
-                self.second_to_last_pose = self.focus_pose_dict[self.keys[-2]]['pose'].pose
-
-                self.save_focus_pose_dict_to_csv()
-                self.focus_pose_dict = {}
+                # Find the pose with the maximum focus value
+                max_focus_entry = max(self.focus_pose_dict.items(), key=lambda item: item[1]['focus_value'])
+                self.max_pose = max_focus_entry[1]['pose']
+                
+                # self.save_focus_pose_dict_to_csv()
+                # self.focus_pose_dict = {}
                 self.counter += 1
                 print('counter =', self.counter)
                 self.state = IDLE
@@ -352,7 +378,7 @@ class PoseStampedCreator(Node):
                 self.speed = kv/self.ratio
                 self.set_parameters([rclpy.parameter.Parameter('y_twist_speed', rclpy.parameter.Parameter.Type.DOUBLE, self.speed)])
                 self.y_twist_speed = self.get_parameter('y_twist_speed').value
-                print('dFV, ddFV, kv/r',self.dFV,self.smooth_ddFV,self.speed,self.y_twist_speed)
+                print('dFV, ddFV, kv/r',self.dFV,self.smooth_ddFV,self.speed)
         return
     
     def save_focus_pose_dict_to_csv(self):

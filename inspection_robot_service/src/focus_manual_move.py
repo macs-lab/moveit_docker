@@ -32,7 +32,7 @@ from rclpy.executors import MultiThreadedExecutor
 from datetime import datetime
 
 MOVING_DISTANCE = 0.10
-SPEED = 0.25 # pos is forward. 0.2 and under is too slow, circular motion on robot is visible
+SPEED = 0.4 # pos is forward. 0.2 and under is too slow, circular motion on robot is visible
 
 IDLE = 0
 FEEDBACK = 1
