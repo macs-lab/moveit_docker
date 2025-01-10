@@ -175,6 +175,7 @@ class PoseStampedCreator(Node):
             final_timestamp = curr_time.nanoseconds / 1e9  # Ensure a unique timestamp
 
             # Save the maximum focus value and its associated pose
+            # Do I need this??
             self.focus_pose_dict[final_timestamp] = {
                 'focus_value': self.curr_focus_value,
                 'ema': self.ema_focus_value,
